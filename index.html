@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Sense HAT Dữ Liệu</title>
+    <style>
+        body { text-align: center; font-family: Arial, sans-serif; }
+        table { margin: auto; border-collapse: collapse; }
+        table, th, td { border: 1px solid black; padding: 8px; }
+        th { background-color: #007BFF; color: white; }
+    </style>
+</head>
+<body>
+    <h1>Hiển Thị Dữ Liệu Sense HAT</h1>
+    <div>
+        <p>Nhiệt độ: <span id="nhietdo">Đang tải...</span>°C</p>
+        <p>Độ ẩm: <span id="doam">Đang tải...</span>%</p>
+    </div>
+    <h2>Lịch Sử Dữ Liệu</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Thời Gian</th>
+                <th>Nhiệt Độ (°C)</th>
+                <th>Độ Ẩm (%)</th>
+            </tr>
+        </thead>
+        <tbody id="history"></tbody>
+    </table>
+
+    <script>
+        // Hàm gọi API và cập nhật dữ liệu
+        function layDuLieu() {
+            fetch("/api/data")
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById("nhietdo").innerText = data.nhiet_do;
+                    document.getElementById("doam").innerText = data.do_am;
+                });
+        }
+
+        // Hàm gọi API lịch sử
+        function xemLichSu() {
+            fetch("/api/history")
+                .then(response => response.json())
+                .then(data => {
+                    const tbody = document.getElementById("history");
+                    tbody.innerHTML = "";
+                    data.forEach(row => {
+                        tbody.innerHTML += `<tr>
+                            <td>${row.thoi_gian}</td>
+                            <td>${row.nhiet_do}</td>
+                            <td>${row.do_am}</td>
+                        </tr>`;
+                    });
+                });
+        }
+
+        // Gọi các hàm mỗi 5 giây
+        setInterval(() => {
+            layDuLieu();
+            xemLichSu();
+        }, 5000);
+
+        layDuLieu();
+        xemLichSu();
+    </script>
+</body>
+</html>
