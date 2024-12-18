@@ -1,68 +1,104 @@
-from flask import Flask, render_template, jsonify
-from flask_sqlalchemy import SQLAlchemy
+import pyrebase
 from sense_emu import SenseHat
-import firebase_admin
-from firebase_admin import credentials, db
 import time
+import numpy as np
+import sqlite3  # Import thư viện SQLite
+from flask import Flask, jsonify, render_template
 
-# Khởi tạo Sense HAT và Flask
-cam_bien = SenseHat()
+# Cấu hình Firebase
+config = {
+    "apiKey": "AIzaSyDqO65FMN9-TUdxriseZBupJjYyX09km0E",
+    "authDomain": "duanio.firebaseapp.com",
+    "databaseURL": "https://duanio-default-rtdb.firebaseio.com",
+    "projectId": "duanio",
+    "storageBucket": "duanio.firebasestorage.app",
+    "messagingSenderId": "809446072915",
+    "appId": "1:809446072915:web:37d287df5f8d5b11bd5ca6",
+    "measurementId": "G-3ZV658YPQF"
+}
+
+# Flask app
 app = Flask(__name__)
 
-# Cấu hình SQLite database
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///data.db'
-db_sql = SQLAlchemy(app)
+# Khởi tạo Firebase và SenseHAT
+firebase = pyrebase.initialize_app(config)
+database = firebase.database()
+sense = SenseHat()
 
-# Firebase cấu hình (tải tệp JSON từ Firebase)
-cred = credentials.Certificate("firebase_credentials.json")  # Thay bằng tệp của bạn
-firebase_admin.initialize_app(cred, {'databaseURL': 'https://your-firebase-url.firebaseio.com'})
+# Kết nối SQLite
+db_file = "sensor_data.db"
 
-# Định nghĩa bảng dữ liệu
-class DuLieuCamBien(db_sql.Model):
-    id = db_sql.Column(db_sql.Integer, primary_key=True)
-    nhiet_do = db_sql.Column(db_sql.Float, nullable=False)
-    do_am = db_sql.Column(db_sql.Float, nullable=False)
-    thoi_gian = db_sql.Column(db_sql.String(50), nullable=False)
+def setup_sqlite():
+    """Tạo bảng SensorData nếu chưa tồn tại"""
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    cursor.execute('''CREATE TABLE IF NOT EXISTS SensorData (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        temperature REAL,
+                        timestamp TEXT
+                      )''')
+    print("Bảng SensorData đã được tạo.")                 
+    conn.commit()
+    conn.close()
 
-# Hàm đọc dữ liệu cảm biến
-def doc_du_lieu_cam_bien():
-    nhiet_do = round(cam_bien.get_temperature(), 1)
-    do_am = round(cam_bien.get_humidity(), 1)
-    return {"nhiet_do": nhiet_do, "do_am": do_am, "thoi_gian": time.strftime('%Y-%m-%d %H:%M:%S')}
+def save_to_sql(temperature, timestamp):
+    """Lưu dữ liệu nhiệt độ và thời gian vào SQLite"""
+    try:
+        conn = sqlite3.connect(db_file)
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO SensorData (temperature, timestamp) VALUES (?, ?)", 
+                       (temperature, timestamp))
+        conn.commit()
+    except Exception as e:
+        print("Lỗi khi lưu vào SQLite:", e)
+    finally:
+        conn.close()
 
-# Route trang chủ
-@app.route("/")
-def index():
-    return render_template("index.html")
+# Biến toàn cục
+n = 5  # Kích thước lịch sử mảng
+history = [0] * n  # Mảng lịch sử
+previous_T = 0  # Giá trị T trước đó
+temperature_change_threshold = 1  # Ngưỡng thay đổi nhiệt độ (1 độ)
 
-# API lấy và lưu dữ liệu vào SQL và Firebase
-@app.route("/api/data")
+# API trả dữ liệu hiện tại
+@app.route('/api/data')
 def api_data():
-    data = doc_du_lieu_cam_bien()
-    
-    # Lưu vào SQLite
-    du_lieu = DuLieuCamBien(nhiet_do=data['nhiet_do'], do_am=data['do_am'], thoi_gian=data['thoi_gian'])
-    db_sql.session.add(du_lieu)
-    db_sql.session.commit()
-    
-    # Đẩy dữ liệu lên Firebase
-    ref = db.reference('du_lieu_cam_bien')
-    ref.push(data)
-    
-    return jsonify(data)
+    global history, previous_T
+    current_temp = round(sense.get_temperature(), 2)
+    mean_temp = np.mean(history)
+    T_cap_nhat = round((current_temp + mean_temp) / 2, 2)
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
 
-# Route xem lịch sử dữ liệu từ SQL
-@app.route("/api/history")
-def xem_lich_su():
-    lich_su = DuLieuCamBien.query.all()
-    data = [{"nhiet_do": d.nhiet_do, "do_am": d.do_am, "thoi_gian": d.thoi_gian} for d in lich_su]
-    return jsonify(data)
+    if abs(current_temp - previous_T) > temperature_change_threshold:
+        save_to_sql(T_cap_nhat, timestamp)
+        sensor_data = {"temperature": T_cap_nhat, "timestamp": timestamp}
+        database.child("OptimizedSensorData").set(sensor_data)
+        previous_T = T_cap_nhat
 
-# Khởi tạo database (chỉ cần chạy 1 lần)
-@app.before_first_request
-def create_tables():
-    db_sql.create_all()
+    # Cập nhật lịch sử nhiệt độ
+    history.pop(0)
+    history.append(current_temp)
 
-# Chạy ứng dụng Flask
+    return jsonify({"nhiet_do": T_cap_nhat, "do_am": round(sense.get_humidity(), 2)})
+
+# API trả dữ liệu lịch sử
+@app.route('/api/history')
+def api_history():
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    cursor.execute("SELECT timestamp, temperature FROM SensorData ORDER BY timestamp DESC LIMIT 10")
+    rows = cursor.fetchall()
+    conn.close()
+    history_data = [{"thoi_gian": row[0], "nhiet_do": row[1], "do_am": round(sense.get_humidity(), 2)} for row in rows]
+    return jsonify(history_data)
+
+# Route hiển thị file index.html
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+# Chạy Flask Server
 if __name__ == "__main__":
-    app.run(debug=True)
+    print("Khởi động chương trình...")
+    setup_sqlite()
+    app.run(host='0.0.0.0', port=5000, debug=True)
